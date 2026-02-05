@@ -1,0 +1,325 @@
+1. Cấu trúc dự án (giống Todo API, dễ copy-paste và modify)
+Tạo folder mới tên media-for-you và cấu trúc như sau:
+textmedia-for-you/
+├── certs/                  (nếu cần HTTPS, nhưng đề không bắt buộc → có thể bỏ)
+├── controllers/
+│   ├── song-controller.js
+│   └── playlist-controller.js
+├── db/
+│   └── db.js
+├── docs/                   (cho OpenAPI/Swagger)
+│   ├── components/
+│   │   └── schemas/
+│   │       ├── song-schema.js
+│   │       ├── playlist-schema.js
+│   │       └── error-schema.js
+│   ├── mount-swagger.js
+│   └── swagger.js
+├── middlewares/
+│   ├── auth-mw.js          (nếu cần auth, nhưng đề không bắt buộc → có thể bỏ)
+│   ├── error-mw.js
+│   ├── response-mw.js
+│   ├── validate-mw.js
+│   ├── request-context.js  (optional, để log)
+│   └── access-logger.js    (optional)
+├── models/
+│   ├── song.js
+│   └── playlist.js
+├── routers/
+│   ├── song-router.js
+│   └── playlist-router.js
+├── services/               (tùy chọn, nhưng nên có để tách logic)
+│   ├── song-service.js
+│   └── playlist-service.js
+├── utils/
+│   ├── app-error.js
+│   └── response.js
+├── validators/
+│   └── song-playlist-schema.js  (Zod schemas)
+├── .env
+├── knexfile.js
+├── app.js
+├── server.js               (nếu cần HTTPS, иначе dùng app.listen)
+├── docker-compose.yml      (nếu dùng Docker cho Postgres)
+├── package.json
+└── migrations/             (tự tạo khi migrate:make)
+    └── 2026...-create-media-tables.js
+2. Bắt buộc phải làm (để tránh trừ điểm nặng)
+
+Port: 23002 + 3 số cuối MSSV (ví dụ MSSV 230270001 → port 23001)
+Database: PostgreSQL (dùng Knex), user = s<server port> (ví dụ s23001), schema = s<server port> (ví dụ s23001)
+.env: PORT=23001 (hoặc theo MSSV), DB_HOST=localhost, DB_PORT=5432, DB_USER=s23001, DB_PASSWORD=..., DB_NAME=mydb (hoặc theo đề)
+CORS: Bắt buộc có app.use(cors())
+RESTful endpoints (theo đề):
+GET /songs
+POST /songs
+GET /songs/:id
+PUT /songs/:id
+DELETE /songs/:id
+GET /playlists
+POST /playlists
+GET /playlists/:id
+GET /playlists/:id/songs
+POST /playlists/:id/songs
+
+Input validation: Dùng Zod (hoặc Joi), ít nhất cho POST/PUT
+Error handling: Dùng try-catch + custom error + response chuẩn (status code đúng)
+Migration & Seed: Bắt buộc có migration tạo 3 bảng, và seed data mẫu
+API docs: OpenAPI (Swagger) – dùng JSDoc trong router
+Không dùng AI: Cậu tự gõ tay (dựa hướng dẫn này)
+
+3. Bắt đầu code (theo thứ tự dễ làm trước)
+Bước 1: package.json & npm install
+JSON{
+  "name": "media-for-you",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "migrate": "knex migrate:latest",
+    "migrate:make": "knex migrate:make",
+    "seed": "knex seed:run",
+    "rollback": "knex migrate:rollback"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "knex": "^3.1.0",
+    "pg": "^8.11.3",
+    "dotenv": "^16.4.5",
+    "zod": "^3.22.4",
+    "swagger-jsdoc": "^6.2.8",
+    "swagger-ui-express": "^5.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.3"
+  }
+}
+Chạy: npm install
+Bước 2: .env (đổi theo MSSV)
+envPORT=23001                  # Thay 001 bằng 3 số cuối MSSV
+DB_HOST=localhost
+DB_PORT=5432
+DB_USER=s23001              # s + port
+DB_PASSWORD=yourpassword
+DB_NAME=media_for_you
+BASE_URL=http://localhost:23001
+Bước 3: knexfile.js
+JavaScriptimport 'dotenv/config';
+
+export default {
+  development: {
+    client: 'pg',
+    connection: {
+      host: process.env.DB_HOST,
+      port: process.env.DB_PORT,
+      user: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
+      database: process.env.DB_NAME,
+      searchPath: [process.env.DB_USER, 'public'],  // schema = s23001
+    },
+    pool: { min: 2, max: 10 },
+    migrations: { directory: './migrations' },
+    seeds: { directory: './seeds' }
+  }
+};
+Bước 4: db/db.js
+JavaScriptimport knex from 'knex';
+import config from '../knexfile.js';
+
+const env = process.env.NODE_ENV || 'development';
+const db = knex(config[env]);
+
+export default db;
+Bước 5: Migration (tạo bảng)
+Tạo file migration: npx knex migrate:make create_media_tables
+JavaScript// migrations/...-create_media_tables.js
+export async function up(knex) {
+  await knex.schema.createTable('SONGS', (table) => {
+    table.serial('id').primary();
+    table.varchar('title', 255).notNullable();
+    table.varchar('artist', 255).notNullable();
+    table.integer('duration_seconds').notNullable();
+    table.varchar('genre', 100);
+    table.text('audio_url');
+    table.timestamptz('created_at').defaultTo(knex.fn.now());
+  });
+
+  await knex.schema.createTable('PLAYLISTS', (table) => {
+    table.serial('id').primary();
+    table.varchar('name', 255).notNullable();
+    table.text('description');
+    table.timestamptz('created_at').defaultTo(knex.fn.now());
+  });
+
+  await knex.schema.createTable('PLAYLIST_SONGS', (table) => {
+    table.integer('playlist_id').unsigned().notNullable()
+      .references('id').inTable('PLAYLISTS').onDelete('CASCADE');
+    table.integer('song_id').unsigned().notNullable()
+      .references('id').inTable('SONGS').onDelete('CASCADE');
+    table.integer('sort_order');
+    table.timestamptz('added_at').defaultTo(knex.fn.now());
+    table.primary(['playlist_id', 'song_id']);  // Composite PK
+  });
+}
+
+export async function down(knex) {
+  await knex.schema.dropTable('PLAYLIST_SONGS');
+  await knex.schema.dropTable('PLAYLISTS');
+  await knex.schema.dropTable('SONGS');
+}
+Chạy: npm run migrate
+Bước 6: Seed data (nộp để tránh -1 điểm)
+Tạo file: npx knex seed:make init_data
+JavaScript// seeds/init_data.js
+export async function seed(knex) {
+  await knex('SONGS').del();
+  await knex('PLAYLISTS').del();
+  await knex('PLAYLIST_SONGS').del();
+
+  const songs = await knex('SONGS').insert([
+    { title: 'Shape of You', artist: 'Ed Sheeran', duration_seconds: 233, genre: 'Pop', audio_url: 'http://example.com/shape.mp3' },
+    { title: 'Blinding Lights', artist: 'The Weeknd', duration_seconds: 200, genre: 'Synthwave', audio_url: 'http://example.com/blinding.mp3' },
+    // Thêm 3-5 bài nữa
+  ]).returning('id');
+
+  const playlists = await knex('PLAYLISTS').insert([
+    { name: 'Chill Vibes', description: 'Relaxing songs' },
+    { name: 'Workout Mix', description: 'High energy' },
+  ]).returning('id');
+
+  await knex('PLAYLIST_SONGS').insert([
+    { playlist_id: playlists[0].id, song_id: songs[0].id, sort_order: 1 },
+    { playlist_id: playlists[0].id, song_id: songs[1].id, sort_order: 2 },
+    // Thêm thêm
+  ]);
+}
+Chạy: npm run seed
+Bước 7: Models (song.js & playlist.js)
+models/song.js
+JavaScriptimport db from '../db/db.js';
+
+const TABLE = 'SONGS';
+
+export default {
+  getAll: async () => db(TABLE).select('*'),
+  getById: async (id) => db(TABLE).where({ id }).first(),
+  create: async (data) => {
+    const [newSong] = await db(TABLE).insert(data).returning('*');
+    return newSong;
+  },
+  update: async (id, data) => {
+    const [updated] = await db(TABLE).where({ id }).update(data).returning('*');
+    return updated;
+  },
+  delete: async (id) => db(TABLE).where({ id }).del(),
+};
+models/playlist.js (tương tự, thêm getSongs)
+JavaScriptimport db from '../db/db.js';
+
+const TABLE = 'PLAYLISTS';
+const JOIN_TABLE = 'PLAYLIST_SONGS';
+
+export default {
+  getAll: async () => db(TABLE).select('*'),
+  getById: async (id) => db(TABLE).where({ id }).first(),
+  create: async (data) => {
+    const [newPlaylist] = await db(TABLE).insert(data).returning('*');
+    return newPlaylist;
+  },
+  getSongs: async (playlistId) => {
+    return db('SONGS')
+      .join(JOIN_TABLE, 'SONGS.id', JOIN_TABLE.song_id)
+      .where({ playlist_id: playlistId })
+      .select('SONGS.*', 'sort_order')
+      .orderBy('sort_order');
+  },
+  addSong: async (playlistId, songId, sortOrder = 999) => {
+    await db(JOIN_TABLE).insert({
+      playlist_id: playlistId,
+      song_id: songId,
+      sort_order: sortOrder
+    });
+  }
+  // Thêm delete song nếu cần
+};
+Bước 8: Utils/AppError & response (copy từ trước, chỉ đổi message nếu cần)
+Bước 9: Validators (Zod)
+validators/song-playlist-schema.js
+JavaScriptimport { z } from 'zod';
+
+export const songSchema = z.object({
+  title: z.string().min(1).max(255),
+  artist: z.string().min(1).max(255),
+  duration_seconds: z.number().int().positive(),
+  genre: z.string().max(100).optional(),
+  audio_url: z.string().url().optional(),
+});
+
+export const playlistSchema = z.object({
+  name: z.string().min(1).max(255),
+  description: z.string().optional(),
+});
+
+export const addSongToPlaylistSchema = z.object({
+  song_id: z.number().int().positive(),
+  sort_order: z.number().int().optional(),
+});
+Bước 10: Middlewares (copy từ trước: validate-mw, response-mw, error-mw, cors)
+Bước 11: Routers (song-router.js & playlist-router.js)
+routers/song-router.js
+JavaScriptimport express from 'express';
+import { validate } from '../middlewares/validate-mw.js';
+import { songSchema } from '../validators/song-playlist-schema.js';
+import * as songController from '../controllers/song-controller.js';
+
+const router = express.Router();
+
+router.get('/', songController.getAllSongs);
+router.post('/', validate(songSchema), songController.createSong);
+router.get('/:id', songController.getSongById);
+router.put('/:id', validate(songSchema.partial()), songController.updateSong);
+router.delete('/:id', songController.deleteSong);
+
+export default router;
+playlist-router.js (tương tự)
+Bước 12: Controllers (song-controller.js)
+JavaScriptimport * as songService from '../services/song-service.js'; // Nếu có service, иначе gọi model trực tiếp
+
+export async function getAllSongs(req, res) {
+  try {
+    const songs = await songModel.getAll();
+    res.ok(songs);
+  } catch (err) {
+    res.error(err);
+  }
+}
+
+// Tương tự cho create, getById, update, delete
+Bước 13: app.js (giống Todo API)
+JavaScriptimport express from 'express';
+import cors from 'cors';
+import errorMW from './middlewares/error-mw.js';
+import responseMW from './middlewares/response-mw.js';
+import songRouter from './routers/song-router.js';
+import playlistRouter from './routers/playlist-router.js';
+
+const app = express();
+
+app.use(cors());
+app.use(express.json());
+app.use(responseMW());
+
+app.use('/songs', songRouter);
+app.use('/playlists', playlistRouter);
+
+app.use((req, res) => res.error({ message: 'Not found' }, 404));
+app.use(errorMW);
+
+export default app;
+Bước 14: server.js
+JavaScriptimport app from './app.js';
+
+const PORT = process.env.PORT || 23001;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
